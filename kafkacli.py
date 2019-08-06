@@ -38,6 +38,7 @@ def options (option=""):
 			{"list": "list [topicName] "},
 			{"desc": "desc/describe [topicName]"},
 			{"create": "create topicName partNum replicaNum "},
+			{"addpart": "addpart topicName partNum "},
 			{"delete": "delete topicName"},
 			{"config": "1 config get topicName [configName] | 2 config set topicName configName"}
 		],
