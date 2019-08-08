@@ -1,0 +1,35 @@
+[mysql]
+ip=127.0.0.1
+port=3306
+user=root
+password=
+dbname=sysbench
+
+[sysbench]
+#生成的表数量
+table_amount=100     
+#限制总的执行时间(秒) 0表示不限制 
+exectime=1200
+#每个表初始化多少行数据
+rows=10000000
+#请求的最大数目。默认为1000000，0代表不限制
+max_request=10000
+#每n秒输出一次测试进度报告
+interval=1
+#指定sysbench的输出日志目录
+logdir=/tmp/sysbench
+##并发压测的线程数
+threadnumber=2,4,8,16,32
+#指定用哪个lua脚本测试
+lua_script=/usr/share/sysbench/oltp_read_only.lua
+#1. bulk_insert.lua  批量写入操作
+#2. oltp_delete.lua 写入和删除并行操作
+#3. oltp_insert.lua  纯写入操作
+#4. oltp_point_select.lua  只读操作，条件为唯一索引列
+#5. oltp_read_only.lua  只读操作，包含聚合，去重等操作
+#6. oltp_read_write.lua 读写混合操作，最常用的脚本
+#7. oltp_update_index.lua 更新操作，通过主键进行更新
+#8. oltp_update_non_index.lua 更新操作，不通过索引列
+#9. oltp_write_only.lua 纯写操作，常用脚本，包括insert update delete
+#10. select_random_points.lua 随机集合只读操作，常用脚本，聚集索引列的selete in操作
+#11. select_random_ranges.lua 随机范围只读操作，常用脚本，聚集索引列的selete between操作
