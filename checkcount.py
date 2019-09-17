@@ -184,9 +184,9 @@ if __name__ == "__main__":
 		,usage = '-sh 127.0.0.1 -sp 3307 -su db_monitor -sa xxxx   -mh 192.168.1.5 -mp 3306 -mu db_monitor -ma xxxx -db db_name  '
 	)
 	parser.add_argument('-sh','--slavehost',type=str,required=False,default='127.0.0.1',help="从节点 ip")
-	parser.add_argument('-sp','--slaveport', type=int,required=False,default=3306,help="主节点port")
+	parser.add_argument('-sp','--slaveport', type=int,required=False,default=3306,help="从节点port")
 	parser.add_argument('-su','--slaveuser',type=str,required=False,default='root',help="从节点user")
-	parser.add_argument('-sa','--slavepassword',type=str,required=False,default='',help="主节点密码")
+	parser.add_argument('-sa','--slavepassword',type=str,required=False,default='',help="从节点密码")
 	parser.add_argument('-mh','--masterhost',type=str,required=False,default='',help="在不使用slave自动获取master连接的情况下,可以指定主节点的ip")
 	parser.add_argument('-mp','--masterport', type=int,required=False,default=3306,help="主节点port")
 	parser.add_argument('-mu','--masteruser',type=str,required=False,default='',help="主节点user")
