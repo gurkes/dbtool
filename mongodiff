@@ -1,0 +1,258 @@
+#!/bin/python
+#coding=utf-8
+from __future__ import division
+
+import json
+import os,sys,re,time
+import traceback
+import commands
+import argparse
+import signal
+import logging
+import logging.handlers
+from multiprocessing.pool import Pool
+import pymongo
+reload(sys)
+sys.setdefaultencoding('utf-8')
+
+
+# define print logs
+def logger(Level="debug",LOG_FILE=None):
+	Loglevel = {"debug":logging.DEBUG,"info":logging.INFO,"error":logging.ERROR,
+		"warning":logging.WARNING,"critical":logging.CRITICAL}
+	logger = logging.getLogger()
+	if LOG_FILE is None:
+		hdlr = logging.StreamHandler(sys.stderr)
+	else:
+		hdlr = logging.handlers.RotatingFileHandler(LOG_FILE, maxBytes=33554432, backupCount=2)
+	formatter = logging.Formatter('%(asctime)s %(lineno)5d %(levelname)s %(message)s','%Y-%m-%d %H:%M:%S')
+	hdlr.setFormatter(formatter)
+	logger.addHandler(hdlr)
+	logger.setLevel(Loglevel[Level])
+	return logger
+dirname, filename = os.path.split(os.path.abspath(sys.argv[0]))
+if not os.path.exists("/data/dba_logs/script"):
+	cmdmkdir="mkdir -p /data/dba_logs/script"
+	os.popen(cmdmkdir)
+logfile = "/data/dba_logs/script/%s_logfile.log" % (filename.rstrip(".py"))
+def toJson (msg, simple=True):
+	if simple:
+		msg = json.dumps(msg, ensure_ascii=False)
+	else:
+		msg = json.dumps(msg, ensure_ascii=False, indent=2, separators=(",", ":"))
+	return msg
+# log = logger("info", logfile)
+log = logger("info", None)
+def lg (msg,level="info"):
+	if isinstance(msg, dict) or isinstance(msg, list):
+		if level=="error":
+			log.error(toJson(msg))
+		else:
+			log.info(toJson(msg))
+	else:
+		if level == "error":
+			log.error(msg)
+		else:
+			log.info(msg)
+
+
+# mongo 连接客户端
+class mongo:
+	host = None
+	port = None
+	passwd = None
+	user = None
+	def __init__(self, host, port, user, passwd,authdb="admin"):
+		self.host = host
+		self.port = port
+		self.passwd = passwd
+		self.user = user
+		self.authdb=authdb
+		self.conn=None
+		try:
+			self.succ, self.conn = self.mongconn()
+		except:
+			error=traceback.format_exc()
+			lg("Connect mongo error: %s,server ip:%s:%s" % (error, self.host, self.port))
+			self.succ = False
+	
+	def mongconn(self):
+		connection = pymongo.MongoClient(host=self.host, port=int(self.port), serverSelectionTimeoutMS=3)
+		db = connection[self.authdb]
+		db.authenticate(self.user, self.passwd)
+		return True,connection
+	## 启用try except 的方式是因为 return 的connect参数能确定类型为connect，如此导致调用改方法不能自动补全
+	def mongo_conn(self):
+		try:
+			connection = pymongo.MongoClient(host=self.host, port=int(self.port), serverSelectionTimeoutMS=3)
+			db = connection[self.authdb]
+			db.authenticate(self.user, self.passwd)
+			return True, connection
+		except:
+			error=traceback.format_exc()
+			lg(error)
+			return False,None
+		
+	def admin(self, stmt):
+		return self.conn.admin.command(stmt)
+
+
+
+def sigint_handler(signum,frame):
+	global is_sigint_up
+	is_sigint_up = True
+	lg('Catched interrupt signal.Exit!')
+
+
+
+
+def table_count(host,port,user,password,authdb,realtime,dbname,tablename):
+	start=time.strftime('%H:%M:%S',time.localtime(time.time()))
+	msg={"code":1,"count":-1,"status":"unknok","end":"","messsage":"","start":start}
+	try:
+		myconn=mongo(host,port,user,password,authdb)
+		db=myconn.conn["admin"]
+		rsstatus=db.command("replSetGetStatus")
+		end=time.strftime('%H:%M:%S',time.localtime(time.time()))
+		status="unknow"
+		for one in rsstatus["members"]:
+			if str(one.get("self","false")).lower()=="true":
+				status=one.get("stateStr","unknow")
+				break
+		if status=="SECONDARY" or status=="PRIMARY":
+			db=myconn.conn[dbname]
+			connection=db[tablename]
+			if  realtime:
+				count=connection.find().count(True)
+			else:
+				count=connection.find().count()
+		else:
+			count=-1
+		msg["count"]=count
+		msg["end"]=end
+		msg["status"]=status
+		msg["code"]=0
+		msg["messsage"]="succ"
+		myconn.conn.close()
+	except:
+		error=traceback.format_exc()
+		msg["messsage"]=error
+	return msg
+
+###表记录数比较
+def diff_pro(masterhost,masterport,slavehost,slaveport,user,password,authdb,onedb,onetab):
+	if is_sigint_up:
+		os._exit(0)
+	pool = Pool(processes=2)
+	slresult=pool.apply_async(table_count, args=(slavehost,slaveport,user,password,authdb,realtime,onedb,onetab))
+	maresult=pool.apply_async(table_count, args=(masterhost,masterport,user,password,authdb,realtime,onedb,onetab))
+	pool.close()
+	pool.join()
+	slinfo=slresult.get()
+	mainfo=maresult.get()
+	if slinfo["count"]==-1 or mainfo["count"]==-1:
+		mark="*"
+	else:
+		mark=int(mainfo["count"])-int(slinfo["count"])
+	# message="%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s" % (onedb,onetab,mainfo["start"],slinfo["start"],mainfo["end"],slinfo["end"],mainfo["count"],slinfo["count"],mark)
+	msg="%-20s|%-20s |%-8s %-8s |%-8s %-8s |%-15s %-15s |%-10s" % (onedb,onetab,mainfo["start"],slinfo["start"],mainfo["end"],slinfo["end"],mainfo["count"],slinfo["count"],mark)
+	print msg
+
+def mainpro(host,port,user,password,perdb,pertable,authdb,realtime,slavenode):
+	msg={"code":1,"message":"","step":sys._getframe().f_code.co_name}
+	header="dbName--------------|collection-----------|-mastart-slstart--|--slend---slend---|-macount-----slcount------------|diff"
+	try:
+		if perdb is not None  and str(perdb).strip()!="":perdb=str(perdb).strip().split(",")
+		else:perdb=[]
+		if pertable is not None and str(pertable).strip()!="":pertable=str(pertable).strip().split(",")
+		else:pertable=[]
+		if len(pertable)>0 and len(perdb)!=1:
+			msg["message"]="指定--pertable必须--perdb，且只能指定一个db"
+			return msg
+		myconn=mongo(host,port,user,password,authdb)
+		if myconn.succ:
+			db=myconn.conn["admin"]
+			isMaster=db.command("isMaster")
+			# rsstatus=db.command("replSetGetStatus")
+			if isMaster["ismaster"]:
+				masterhost=host
+				masterport=port
+				if slavenode not in isMaster["hosts"]:
+					msg["messsage"]="指定的从节点--slavenode不存在集群,请rs.isMaster查看"
+					return msg
+				else:
+					slavehost,slaveport=str(slavenode).strip().split(":")
+			else:
+				masterhost,masterport=str(isMaster["primary"]).strip().split(":")
+				slavehost=host
+				slaveport=port
+			###找出要比对的db
+			maconn=mongo(masterhost,masterport,user,password,authdb)
+			slconn=mongo(slavehost,slaveport,user,password,authdb)
+			madatabase=maconn.conn.database_names()
+			sldatabase=maconn.conn.database_names()
+			dblist=[]
+			databases=list(set(madatabase+sldatabase))
+			if not sysdb:
+				databases.remove("admin")
+				databases.remove("local")
+			if len(perdb)>0:
+				for one in perdb:
+					if one in databases:
+						dblist.append(one)
+			else:
+				dblist=databases
+			if len(dblist)>0:
+				print header
+				for onedb in dblist:
+					madb=maconn.conn[onedb]
+					sldb=slconn.conn[onedb]
+					macollections=madb.collection_names()
+					slcollections=sldb.collection_names()
+					collections=list(set(macollections+slcollections))
+					if len(pertable)>0:tablelist=pertable
+					else:tablelist=collections
+					for onetab in tablelist:
+						diff_pro(masterhost,masterport,slavehost,slaveport,user,password,authdb,onedb,onetab)
+				print header
+		else:
+			msg["messsage"]="connect fail"
+		msg["code"]=0
+			
+	except:
+		error=traceback.format_exc()
+		lg(error)
+		msg["message"]="exectue error"
+	return msg
+
+
+if __name__ == "__main__":
+	dbname='information_schema'
+	parser = argparse.ArgumentParser(description='*********************mongo主从表记录数进行比对*********************\n(默认alldb,除了information_schema,performance_schema,auditdb和View)')
+	parser.add_argument('-i','--host',type=str,required=False,default='127.0.0.1',help="host,default:127.0.0.1")
+	parser.add_argument('-p','--port',type=int,required=True,help="port")
+	parser.add_argument('-u','--user',type=str,required=False,default=None,help="user")
+	parser.add_argument('-pw','--password',type=str,required=False,default=None,help="password")
+	parser.add_argument('-au','--authdb',type=str,required=False,default="admin",help="authdb ")
+	parser.add_argument('-db','--perdb',type=str,required=False,default="",help="指定database,eg:'db1,db2'")
+	parser.add_argument('-tb','--pertable',type=str,required=False,default="",help="指定table,eg:'tab1,tab2'")
+	parser.add_argument('-t','--realtime', action='store_true',default=False,help="指定则实时统计，即count(True),可能导致锁，谨慎使用")
+	parser.add_argument('-sl','--slavenode',action='store_true',default=False,help="如果指定的-i:-p是primary节点,则需要指定改参数ip:port表明与哪个从节点对比")
+	parser.add_argument('-sys','--sysdb', action='store_true',default=False,help="不去除系统库:admin,local 默认去除系统库")
+	args = parser.parse_args()
+	port = args.port
+	host=args.host
+	user=args.user
+	password=args.password
+	authdb=args.authdb
+	perdb = args.perdb
+	pertable = args.pertable
+	realtime = args.realtime
+	slavenode = args.slavenode
+	sysdb =args.sysdb
+	is_sigint_up = False
+	signal.signal(signal.SIGINT, sigint_handler)
+	signal.signal(signal.SIGHUP, sigint_handler)
+	signal.signal(signal.SIGTERM, sigint_handler)
+	mainpro_msg=mainpro(host,port,user,password,perdb,pertable,authdb,realtime,slavenode)
+	if mainpro_msg["code"]==1:print toJson(mainpro_msg,simple=False)
